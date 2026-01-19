@@ -9,10 +9,11 @@ module dmem(
 parameter DMEM_BYTES = 16384;
 localparam DMEM_WORDS = DMEM_BYTES / 4;
 localparam IMEM_MIRROR_BYTES = 16384;
-reg [7:0] mem[0:DMEM_BYTES-1];
+(* ram_style = "block" *) reg [7:0] mem[0:DMEM_BYTES-1];
 reg [31:0] init_words[0:DMEM_WORDS-1];
 integer i;
 integer w;
+`ifndef SYNTHESIS
 reg [11:0] wi;
 reg [31:0] imem_word;
 /* verilator lint_off UNUSEDSIGNAL */
@@ -20,6 +21,7 @@ reg [31:0] byte_addr;
 /* verilator lint_on UNUSEDSIGNAL */
 reg [1:0] byte_sel;
 reg [7:0] byte_data;
+`endif
 
 initial begin
   for (i = 0; i < DMEM_BYTES; i = i + 1) begin
@@ -47,26 +49,21 @@ function [7:0] mem_read_byte;
   end
 endfunction
 
-reg [7:0] b0;
-reg [7:0] b1;
-reg [7:0] b2;
-reg [7:0] b3;
 reg [31:0] rdata_r;
-
-always @* begin
-  b0 = mem_read_byte(addr);
-  b1 = mem_read_byte(addr + 32'd1);
-  b2 = mem_read_byte(addr + 32'd2);
-  b3 = mem_read_byte(addr + 32'd3);
-  rdata_r = {b3, b2, b1, b0};
-end
+reg [31:0] addr_r;
 
 always @(posedge clk) begin
+  addr_r <= addr;
+  rdata_r <= {mem_read_byte(addr_r + 32'd3),
+              mem_read_byte(addr_r + 32'd2),
+              mem_read_byte(addr_r + 32'd1),
+              mem_read_byte(addr_r)};
   if (we) begin
     if (wmask[0] && (addr < DMEM_BYTES)) mem[addr] <= wdata[7:0];
     if (wmask[1] && ((addr + 32'd1) < DMEM_BYTES)) mem[addr + 32'd1] <= wdata[15:8];
     if (wmask[2] && ((addr + 32'd2) < DMEM_BYTES)) mem[addr + 32'd2] <= wdata[23:16];
     if (wmask[3] && ((addr + 32'd3) < DMEM_BYTES)) mem[addr + 32'd3] <= wdata[31:24];
+`ifndef SYNTHESIS
     // Mirror data writes into instruction memory to model fence.i with self-modifying code.
     /* verilator lint_off BLKSEQ */
     if (wmask[0] && (addr < IMEM_MIRROR_BYTES)) begin
@@ -126,6 +123,7 @@ always @(posedge clk) begin
       tb_rv32i.u_imem.mem[wi] = imem_word;
     end
     /* verilator lint_on BLKSEQ */
+`endif
   end
 end
 

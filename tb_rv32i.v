@@ -13,6 +13,7 @@ module tb_rv32i;
   wire unused_pc_debug = &pc_debug;
 
   imem u_imem(
+    .clk(clk),
     .addr(imem_addr),
     .rdata(imem_rdata)
   );
