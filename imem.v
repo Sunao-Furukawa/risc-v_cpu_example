@@ -16,12 +16,21 @@ initial begin
   $readmemh("rom.hex", mem);
 end
 
+`ifdef SYNTHESIS
 always @(posedge clk) begin
   if (addr[31:2] < IMEM_WORDS)
     rdata_r <= mem[addr[13:2]];
   else
     rdata_r <= 32'h00000013;
 end
+`else
+always @* begin
+  if (addr[31:2] < IMEM_WORDS)
+    rdata_r = mem[addr[13:2]];
+  else
+    rdata_r = 32'h00000013;
+end
+`endif
 
 assign rdata = rdata_r;
 endmodule

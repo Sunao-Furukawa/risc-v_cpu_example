@@ -50,14 +50,24 @@ function [7:0] mem_read_byte;
 endfunction
 
 reg [31:0] rdata_r;
-reg [31:0] addr_r;
+
+`ifdef SYNTHESIS
+always @(posedge clk) begin
+  rdata_r <= {mem_read_byte(addr + 32'd3),
+              mem_read_byte(addr + 32'd2),
+              mem_read_byte(addr + 32'd1),
+              mem_read_byte(addr)};
+end
+`else
+always @* begin
+  rdata_r = {mem_read_byte(addr + 32'd3),
+             mem_read_byte(addr + 32'd2),
+             mem_read_byte(addr + 32'd1),
+             mem_read_byte(addr)};
+end
+`endif
 
 always @(posedge clk) begin
-  addr_r <= addr;
-  rdata_r <= {mem_read_byte(addr_r + 32'd3),
-              mem_read_byte(addr_r + 32'd2),
-              mem_read_byte(addr_r + 32'd1),
-              mem_read_byte(addr_r)};
   if (we) begin
     if (wmask[0] && (addr < DMEM_BYTES)) mem[addr] <= wdata[7:0];
     if (wmask[1] && ((addr + 32'd1) < DMEM_BYTES)) mem[addr + 32'd1] <= wdata[15:8];
