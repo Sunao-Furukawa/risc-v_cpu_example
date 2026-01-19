@@ -39,7 +39,7 @@ for t in "${tests[@]}"; do
   base=$(basename "$t" .bin.hex)
   cp "$t" "$ROM_HEX"
   echo "== $base =="
-  result=$(vvp "$SIM_OUT" 2>&1 | tail -n 1)
+  result=$(vvp "$SIM_OUT" 2>&1 | grep -E "^(PASS|FAIL)" | tail -n 1)
   echo "$result"
   if echo "$result" | grep -q "PASS"; then
     pass=$((pass + 1))
