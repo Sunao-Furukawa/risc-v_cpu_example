@@ -6,6 +6,19 @@ TEST_DIR="$ROOT_DIR/tests/riscv/isa"
 ROM_HEX="$ROOT_DIR/rom.hex"
 SIM_OUT="$ROOT_DIR/sim.out"
 
+# SYNTH=1 builds the synthesizable configuration: the pipelined core plus the
+# registered (block RAM) imem/dmem read paths. SIM_IMEM_MIRROR keeps the
+# simulation-only dmem->imem write mirror so fence_i still has something to
+# test; real hardware cannot run self-modifying code.
+IVFLAGS=""
+if [ "${SYNTH:-0}" = "1" ]; then
+  IVFLAGS="-DSYNTHESIS -DSIM_IMEM_MIRROR"
+  SIM_OUT="$ROOT_DIR/sim_synth.out"
+  echo "== configuration: SYNTHESIS =="
+else
+  echo "== configuration: behavioural =="
+fi
+
 if ! command -v iverilog >/dev/null 2>&1; then
   echo "iverilog not found in PATH" >&2
   exit 1
@@ -26,7 +39,7 @@ if [ -f "$ROM_HEX" ]; then
 fi
 trap 'if [ -f "$ROM_HEX.bak" ]; then mv -f "$ROM_HEX.bak" "$ROM_HEX"; fi' EXIT
 
-iverilog -g2012 -s tb_rv32i -o "$SIM_OUT" \
+iverilog -g2012 $IVFLAGS -s tb_rv32i -o "$SIM_OUT" \
   "$ROOT_DIR/rv32i_cpu.v" \
   "$ROOT_DIR/imem.v" \
   "$ROOT_DIR/dmem.v" \

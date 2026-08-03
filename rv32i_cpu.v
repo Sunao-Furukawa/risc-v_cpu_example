@@ -1,5 +1,21 @@
 `timescale 1ns/1ps
 `ifdef SYNTHESIS
+// Synthesizable core.
+//
+// imem and dmem are block RAMs here, so their read data is registered and only
+// becomes valid the cycle *after* the address is presented. The core is built
+// around that:
+//
+//   pc          - address of the instruction currently sitting in imem_rdata
+//   fetch_valid - imem_rdata has caught up with pc (clear for one cycle out of
+//                 reset, while the first fetch is in flight)
+//   imem_addr   - runs one instruction ahead while executing, so the next
+//                 instruction is already in imem_rdata on the next edge; held
+//                 at pc while stalled so imem re-presents the same instruction
+//
+// Throughput is one instruction per cycle. Loads take a second cycle to wait
+// for dmem; because nothing executes while load_pending is set, that stall
+// also resolves the load-use hazard without any forwarding.
 module rv32i_cpu(
   input clk,
   input reset,
@@ -13,38 +29,42 @@ module rv32i_cpu(
   output [31:0] pc_debug
 );
 
-reg [31:0] pc_fetch;
-reg [31:0] pc_exec;
-reg [31:0] instr_reg;
-reg instr_valid;
-assign pc_debug = pc_exec;
-assign imem_addr = pc_fetch;
+reg [31:0] pc;
+reg fetch_valid;
+reg load_pending;
+reg [4:0] load_rd;
+reg [2:0] load_funct3;
+
+wire exec_en = fetch_valid && !load_pending;
+
+assign pc_debug = pc;
 
 reg [31:0] regs[0:31];
 
 reg [31:0] csr_mtvec;
 reg [31:0] csr_mcause;
-wire [11:0] csr_addr = instr_reg[31:20];
 reg [31:0] csr_rdata;
 reg csr_we;
 reg [31:0] csr_wdata;
 reg ecall;
 
-wire [6:0] opcode = instr_reg[6:0];
-wire [4:0] rd = instr_reg[11:7];
-wire [2:0] funct3 = instr_reg[14:12];
-wire [4:0] rs1 = instr_reg[19:15];
-wire [4:0] rs2 = instr_reg[24:20];
-wire [6:0] funct7 = instr_reg[31:25];
+wire [31:0] instr = imem_rdata;
+wire [6:0] opcode = instr[6:0];
+wire [4:0] rd = instr[11:7];
+wire [2:0] funct3 = instr[14:12];
+wire [4:0] rs1 = instr[19:15];
+wire [4:0] rs2 = instr[24:20];
+wire [6:0] funct7 = instr[31:25];
+wire [11:0] csr_addr = instr[31:20];
 
 wire [31:0] rs1_val = (rs1 == 0) ? 32'b0 : regs[rs1];
 wire [31:0] rs2_val = (rs2 == 0) ? 32'b0 : regs[rs2];
 
-wire [31:0] imm_i = {{20{instr_reg[31]}}, instr_reg[31:20]};
-wire [31:0] imm_s = {{20{instr_reg[31]}}, instr_reg[31:25], instr_reg[11:7]};
-wire [31:0] imm_b = {{19{instr_reg[31]}}, instr_reg[31], instr_reg[7], instr_reg[30:25], instr_reg[11:8], 1'b0};
-wire [31:0] imm_u = {instr_reg[31:12], 12'b0};
-wire [31:0] imm_j = {{11{instr_reg[31]}}, instr_reg[31], instr_reg[19:12], instr_reg[20], instr_reg[30:21], 1'b0};
+wire [31:0] imm_i = {{20{instr[31]}}, instr[31:20]};
+wire [31:0] imm_s = {{20{instr[31]}}, instr[31:25], instr[11:7]};
+wire [31:0] imm_b = {{19{instr[31]}}, instr[31], instr[7], instr[30:25], instr[11:8], 1'b0};
+wire [31:0] imm_u = {instr[31:12], 12'b0};
+wire [31:0] imm_j = {{11{instr[31]}}, instr[31], instr[19:12], instr[20], instr[30:21], 1'b0};
 
 reg [31:0] next_pc;
 reg reg_we;
@@ -52,26 +72,21 @@ reg [31:0] reg_wdata;
 reg mem_we_r;
 reg [3:0] mem_wmask_r;
 reg [31:0] mem_addr_r;
-reg [31:0] mem_wdata_r;
+reg load_start;
 
 assign mem_we = mem_we_r;
 assign mem_wmask = mem_wmask_r;
 assign mem_addr = mem_addr_r;
-assign mem_wdata = mem_wdata_r;
+assign mem_wdata = rs2_val;
+
+// Fetch one instruction ahead while executing, otherwise hold the address so
+// the stalled-on instruction is still there when we resume. imem_rdata is
+// registered, so this is not a combinational loop.
+assign imem_addr = exec_en ? next_pc : pc;
 
 reg [31:0] alu_a;
 reg [31:0] alu_b;
 reg [31:0] alu_out;
-
-reg load_pending;
-reg [4:0] load_rd;
-reg [2:0] load_funct3;
-reg load_start;
-reg [31:0] load_wdata;
-reg [31:0] load_addr;
-reg [31:0] load_addr_calc;
-reg branch_taken;
-reg hold_fetch;
 
 function [31:0] csr_read;
   input [11:0] addr;
@@ -104,14 +119,15 @@ function [31:0] load_data;
   end
 endfunction
 
+wire [31:0] load_wdata = load_data(load_funct3, mem_rdata);
+
 always @* begin
-  next_pc = pc_exec + 32'd4;
+  next_pc = pc + 32'd4;
   reg_we = 1'b0;
   reg_wdata = 32'b0;
   mem_we_r = 1'b0;
   mem_wmask_r = 4'b0000;
-  mem_addr_r = load_pending ? load_addr : 32'b0;
-  mem_wdata_r = rs2_val;
+  mem_addr_r = 32'b0;
   csr_we = 1'b0;
   csr_wdata = 32'b0;
   ecall = 1'b0;
@@ -120,11 +136,8 @@ always @* begin
   alu_b = rs2_val;
   alu_out = 32'b0;
   load_start = 1'b0;
-  load_wdata = load_data(load_funct3, mem_rdata);
-  load_addr_calc = 32'b0;
-  branch_taken = 1'b0;
 
-  if (instr_valid && !load_pending) begin
+  if (exec_en) begin
     case (opcode)
       7'b0110111: begin
         reg_we = 1'b1;
@@ -132,34 +145,33 @@ always @* begin
       end
       7'b0010111: begin
         reg_we = 1'b1;
-        reg_wdata = pc_exec + imm_u;
+        reg_wdata = pc + imm_u;
       end
       7'b1101111: begin
         reg_we = 1'b1;
-        reg_wdata = pc_exec + 32'd4;
-        next_pc = pc_exec + imm_j;
-        branch_taken = 1'b1;
+        reg_wdata = pc + 32'd4;
+        next_pc = pc + imm_j;
       end
       7'b1100111: begin
         reg_we = 1'b1;
-        reg_wdata = pc_exec + 32'd4;
+        reg_wdata = pc + 32'd4;
         next_pc = (rs1_val + imm_i) & ~32'd1;
-        branch_taken = 1'b1;
       end
       7'b1100011: begin
         case (funct3)
-          3'b000: if (rs1_val == rs2_val) begin next_pc = pc_exec + imm_b; branch_taken = 1'b1; end // BEQ
-          3'b001: if (rs1_val != rs2_val) begin next_pc = pc_exec + imm_b; branch_taken = 1'b1; end // BNE
-          3'b100: if ($signed(rs1_val) < $signed(rs2_val)) begin next_pc = pc_exec + imm_b; branch_taken = 1'b1; end // BLT
-          3'b101: if ($signed(rs1_val) >= $signed(rs2_val)) begin next_pc = pc_exec + imm_b; branch_taken = 1'b1; end // BGE
-          3'b110: if (rs1_val < rs2_val) begin next_pc = pc_exec + imm_b; branch_taken = 1'b1; end // BLTU
-          3'b111: if (rs1_val >= rs2_val) begin next_pc = pc_exec + imm_b; branch_taken = 1'b1; end // BGEU
+          3'b000: if (rs1_val == rs2_val) next_pc = pc + imm_b; // BEQ
+          3'b001: if (rs1_val != rs2_val) next_pc = pc + imm_b; // BNE
+          3'b100: if ($signed(rs1_val) < $signed(rs2_val)) next_pc = pc + imm_b; // BLT
+          3'b101: if ($signed(rs1_val) >= $signed(rs2_val)) next_pc = pc + imm_b; // BGE
+          3'b110: if (rs1_val < rs2_val) next_pc = pc + imm_b; // BLTU
+          3'b111: if (rs1_val >= rs2_val) next_pc = pc + imm_b; // BGEU
           default: ;
         endcase
       end
       7'b0000011: begin
-        load_addr_calc = rs1_val + imm_i;
-        mem_addr_r = load_addr_calc;
+        // Address goes out now; the data comes back next cycle, when
+        // load_pending steers it into load_rd.
+        mem_addr_r = rs1_val + imm_i;
         load_start = 1'b1;
       end
       7'b0100011: begin
@@ -183,12 +195,12 @@ always @* begin
           3'b100: alu_out = alu_a ^ alu_b; // XORI
           3'b110: alu_out = alu_a | alu_b; // ORI
           3'b111: alu_out = alu_a & alu_b; // ANDI
-          3'b001: alu_out = alu_a << instr_reg[24:20]; // SLLI
+          3'b001: alu_out = alu_a << instr[24:20]; // SLLI
           3'b101: begin
             if (funct7 == 7'b0100000)
-              alu_out = $signed(alu_a) >>> instr_reg[24:20]; // SRAI
+              alu_out = $signed(alu_a) >>> instr[24:20]; // SRAI
             else
-              alu_out = alu_a >> instr_reg[24:20]; // SRLI
+              alu_out = alu_a >> instr[24:20]; // SRLI
           end
           default: alu_out = 32'b0;
         endcase
@@ -225,10 +237,9 @@ always @* begin
         csr_rdata = csr_read(csr_addr);
         case (funct3)
           3'b000: begin
-            if (instr_reg[31:20] == 12'b0) begin
+            if (instr[31:20] == 12'b0) begin
               ecall = 1'b1;
               next_pc = csr_mtvec;
-              branch_taken = 1'b1;
             end
           end
           3'b001: begin // CSRRW
@@ -258,36 +269,26 @@ end
 integer i;
 always @(posedge clk or posedge reset) begin
   if (reset) begin
-    pc_fetch <= 32'b0;
-    pc_exec <= 32'b0;
-    instr_reg <= 32'h00000013;
-    instr_valid <= 1'b0;
+    pc <= 32'b0;
+    fetch_valid <= 1'b0;
     load_pending <= 1'b0;
     load_rd <= 5'b0;
     load_funct3 <= 3'b0;
-    load_addr <= 32'b0;
-    hold_fetch <= 1'b0;
     for (i = 0; i < 32; i = i + 1) begin
       regs[i] <= 32'b0;
     end
     csr_mtvec <= 32'b0;
     csr_mcause <= 32'b0;
   end else begin
+    // After the first cycle out of reset imem_rdata always tracks imem_addr.
+    fetch_valid <= 1'b1;
     if (load_pending) begin
       if (load_rd != 0) begin
         regs[load_rd] <= load_wdata;
       end
       load_pending <= 1'b0;
-      instr_valid <= 1'b0;
-    end else begin
-      pc_exec <= pc_fetch;
-      instr_reg <= imem_rdata;
-      instr_valid <= 1'b1;
-      if (!hold_fetch) begin
-        pc_fetch <= next_pc;
-      end else begin
-        hold_fetch <= 1'b0;
-      end
+    end else if (exec_en) begin
+      pc <= next_pc;
       if (reg_we && (rd != 0)) begin
         regs[rd] <= reg_wdata;
       end
@@ -305,11 +306,6 @@ always @(posedge clk or posedge reset) begin
         load_pending <= 1'b1;
         load_rd <= rd;
         load_funct3 <= funct3;
-        load_addr <= load_addr_calc;
-        instr_valid <= 1'b0;
-      end else if (branch_taken) begin
-        instr_valid <= 1'b0;
-        hold_fetch <= 1'b1;
       end
     end
   end

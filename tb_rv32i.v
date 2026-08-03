@@ -40,10 +40,12 @@ module tb_rv32i;
     .pc_debug(pc_debug)
   );
 
+  // dmem stores whole words, so tohost is just a word lookup. Callers pass a
+  // word-aligned address.
   function [31:0] mem_word;
     input [31:0] addr;
     begin
-      mem_word = {u_dmem.mem[addr + 32'd3], u_dmem.mem[addr + 32'd2], u_dmem.mem[addr + 32'd1], u_dmem.mem[addr]};
+      mem_word = u_dmem.mem[addr[13:2]];
     end
   endfunction
 

@@ -7,8 +7,19 @@ RTOS_HEX="$RTOS_DIR/rtos.hex"
 ROM_HEX="$ROOT_DIR/rom.hex"
 SIM_OUT="$ROOT_DIR/sim_rtos.out"
 
-# A full test_rtos.c run needs ~330k cycles; leave headroom.
+# A full test_rtos.c run needs ~330k cycles behaviourally and ~430k in the
+# SYNTHESIS configuration (loads cost an extra cycle there); leave headroom.
 MAX_CYCLES="${MAX_CYCLES:-2000000}"
+
+# SYNTH=1 builds the synthesizable configuration; see run_riscv_tests.sh.
+IVFLAGS=""
+if [ "${SYNTH:-0}" = "1" ]; then
+  IVFLAGS="-DSYNTHESIS -DSIM_IMEM_MIRROR"
+  SIM_OUT="$ROOT_DIR/sim_rtos_synth.out"
+  echo "== configuration: SYNTHESIS =="
+else
+  echo "== configuration: behavioural =="
+fi
 
 if ! command -v iverilog >/dev/null 2>&1; then
   echo "iverilog not found in PATH" >&2
@@ -37,7 +48,7 @@ if [ -f "$ROM_HEX" ]; then
 fi
 trap 'if [ -f "$ROM_HEX.bak" ]; then mv -f "$ROM_HEX.bak" "$ROM_HEX"; fi' EXIT
 
-iverilog -g2012 -s tb_rv32i -o "$SIM_OUT" \
+iverilog -g2012 $IVFLAGS -s tb_rv32i -o "$SIM_OUT" \
   "$ROOT_DIR/rv32i_cpu.v" \
   "$ROOT_DIR/imem.v" \
   "$ROOT_DIR/dmem.v" \

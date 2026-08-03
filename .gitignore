@@ -1,3 +1,5 @@
 sim_rtos.out
+sim_synth.out
+sim_rtos_synth.out
 rom.hex.bak
 *.vcd
