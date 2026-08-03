@@ -39,7 +39,9 @@ for t in "${tests[@]}"; do
   base=$(basename "$t" .bin.hex)
   cp "$t" "$ROM_HEX"
   echo "== $base =="
-  result=$(vvp "$SIM_OUT" 2>&1 | grep -E "^(PASS|FAIL)" | tail -n 1)
+  # ISA tests finish in <1000 cycles; cap well below the testbench default so a
+  # hung test fails fast. Use run_rtos.sh for the long RTOS run.
+  result=$(vvp "$SIM_OUT" +max_cycles=200000 2>&1 | grep -E "^(PASS|FAIL|TIMEOUT)" | tail -n 1)
   echo "$result"
   if echo "$result" | grep -q "PASS"; then
     pass=$((pass + 1))

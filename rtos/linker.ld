@@ -19,11 +19,18 @@ SECTIONS
 
   .data : {
     *(.data .data.*)
+    *(.sdata .sdata.*)
   } > RAM
 
+  /* start.S zeroes [_sbss, _ebss) a word at a time, so both bounds must be
+     word aligned and the range must cover .sbss as well as .bss -- gcc puts
+     small objects (g_ticks, the task counters) in .sbss. */
   .bss : {
+    . = ALIGN(4);
     _sbss = .;
+    *(.sbss .sbss.*)
     *(.bss .bss.* COMMON)
+    . = ALIGN(4);
     _ebss = .;
   } > RAM
 

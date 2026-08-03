@@ -61,21 +61,27 @@ module tb_rv32i;
     #20;
     reset = 1'b0;
 
-    max_cycles = 200000;
+    // The rv32ui ISA tests finish in <1000 cycles, but a full RTOS run
+    // (rtos/test_rtos.c) needs ~330k cycles, so the budget has to cover it.
+    // Override with +max_cycles=<n> for longer or shorter runs.
+    if (!$value$plusargs("max_cycles=%d", max_cycles)) begin
+      max_cycles = 2000000;
+    end
+
     for (cycle = 0; cycle < max_cycles; cycle = cycle + 1) begin
       @(posedge clk);
       tohost = mem_word(32'h00001000);
       if (tohost != 0) begin
         if (tohost == 32'd1) begin
-          $display("PASS");
+          $display("PASS (%0d cycles)", cycle + 1);
         end else begin
-          $display("FAIL: tohost=%0d", tohost);
+          $display("FAIL: tohost=%0d (%0d cycles)", tohost, cycle + 1);
         end
         $finish;
       end
     end
 
-    $display("TIMEOUT");
+    $display("TIMEOUT after %0d cycles (pc=0x%08x)", max_cycles, pc_debug);
     $finish;
   end
 endmodule
